@@ -1,0 +1,3 @@
+[submodule "MambaFormer"]
+	path = MambaFormer
+	url = git@github.com:thomas2mars/MambaFormer.git

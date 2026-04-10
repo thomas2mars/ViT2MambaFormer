@@ -1,0 +1,9 @@
+dataset/*
+models/*
+logs/
+*.out
+scripts/logs/*
+__pycache__/
+paper/
+tools/attention_viz/
+.claude/

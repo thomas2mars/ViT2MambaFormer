@@ -1,0 +1,394 @@
+import math
+import torch
+import torch.optim as optim
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torchvision.models import vit_b_16
+from tqdm import tqdm
+import time
+import sys
+import os
+import argparse
+
+# --- IMPORTS ---
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))   # distillation_b_wt/ for MO.*
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))  # project root for utils.*
+from utils.vit_utils import ViTStatesExtractor, convert_npz_to_torchvision
+from utils.data import build_dataloaders
+from utils.training import (
+    setup_ddp, cleanup_ddp, save_checkpoint, load_checkpoint,
+    aggregate_layer_metrics, save_metrics, init_layer_trackers,
+)
+from MambaFormer.MambaFormer import MambaFormer_Base_expand1_light_BiMamba2
+from MambaFormer.utils import (
+    compute_ssd_attention_map,
+    load_cls_tokens_stem_embeddings,
+    load_head_weights,
+    load_encoders_ln_mlp_weights,
+    patch_student_for_extraction,
+)
+from MO.config import DistillationConfig
+from MO.losses import (
+    combined_distillation_loss, cosine_similarity_metric, JS_divergence_metric,
+)
+
+# Clear registry
+try:
+    from torchvision.models._api import BUILTIN_MODELS
+    BUILTIN_MODELS.clear()
+except ImportError:
+    pass
+
+
+# --- MODEL SETUP ---
+
+def load_teacher(cfg, device):
+    teacher = vit_b_16(weights=None, image_size=384)
+    if os.path.exists(cfg.teacher_weights_path):
+        if cfg.teacher_weights_path.endswith('.npz'):
+            state_dict = convert_npz_to_torchvision(
+                cfg.teacher_weights_path, num_layers=12, embed_dim=768, num_heads=12
+            )
+        else:
+            state_dict = torch.load(cfg.teacher_weights_path, map_location='cpu', weights_only=True)
+        teacher.load_state_dict(state_dict)
+    else:
+        state_dict = None
+
+    teacher.to(device)
+    teacher.eval()
+    teacher = torch.compile(teacher, mode="reduce-overhead")
+
+    extractor = ViTStatesExtractor(
+        teacher, layer_indices=None, extract_attention=True,
+        double_cls_token=cfg.double_cls_token
+    )
+    return teacher, extractor, state_dict
+
+
+def load_student(cfg, teacher_state_dict, device, local_rank):
+    student = MambaFormer_Base_expand1_light_BiMamba2(double_cls_token=cfg.double_cls_token, image_size=384)
+    separate_directions = student.separate_directions
+
+    if teacher_state_dict is not None:
+        load_cls_tokens_stem_embeddings(student, teacher_state_dict)
+        load_encoders_ln_mlp_weights(student, teacher_state_dict)
+        load_head_weights(student, teacher_state_dict)
+
+    student.to(device)
+    student.train()
+
+    # Freeze everything, then unfreeze only the in_proj (produces B, C, w for attention maps)
+    # and down/up projections if bottleneck is used
+    for p in student.parameters():
+        p.requires_grad = False
+    for layer in student.encoder.layers:
+        if student.hidden_dim != student.mamba_hidden_dim:
+            for param in layer.down_proj.parameters():
+                param.requires_grad = True
+            for param in layer.up_proj.parameters():
+                param.requires_grad = True
+        mixer = layer.mixer
+        if student.separate_directions:
+            for param in mixer.fwd_mamba.in_proj.parameters():
+                param.requires_grad = True
+            for param in mixer.bwd_mamba.in_proj.parameters():
+                param.requires_grad = True
+        else:
+            for param in mixer.mamba.in_proj.parameters():
+                param.requires_grad = True
+
+    if dist.is_initialized():
+        student = DDP(student, device_ids=[local_rank], find_unused_parameters=False)
+
+    return student, separate_directions
+
+
+# --- TRAINING / VALIDATION ---
+
+def train_one_epoch(student, student_ref, teacher_extractor, optimizer, dataloader,
+                    get_layer_states, clear_states, cfg, device, is_master, dtype):
+    student.train()
+
+    num_layers = cfg.num_layers
+    metrics_interval = max(1, len(dataloader) // cfg.heavy_metrics_logs_per_epoch)
+    trackers = init_layer_trackers(num_layers)
+    epoch_loss = 0.0
+
+    interactive = not os.environ.get('SLURM_JOB_ID')
+    progress_bar = tqdm(dataloader, desc='Training', unit='batch', disable=not (is_master and interactive))
+
+    for batch_idx, (batch, _) in enumerate(progress_bar):
+        batch = batch.to(device, non_blocking=True)
+        optimizer.zero_grad()
+        clear_states()
+
+        with torch.no_grad(), torch.amp.autocast('cuda', enabled=True, dtype=dtype):
+            _, teacher_states = teacher_extractor.get_vit_states(batch)
+
+        batch_loss_tensor = torch.zeros(1, device=device, dtype=torch.float32)
+        layer_loss_tensors = []
+        layer_attn_pairs = []
+        chunk_loss = 0.0
+
+        compute_metrics = is_master and (batch_idx % metrics_interval == 0)
+
+        # --- CHUNKED LAYER ITERATION ---
+        with torch.amp.autocast('cuda', enabled=True, dtype=dtype):
+            for layer_idx in range(num_layers):
+
+                # 1. Input/Target Selection
+                if layer_idx == 0:
+                    inp = teacher_states['first_layer_input']
+                else:
+                    inp = teacher_states['layers_output'][f'layer_{layer_idx - 1}']
+
+                if cfg.double_cls_token and inp.shape[1] == 577:
+                    raise ValueError("Student input has 577 seq length, but teacher has 578")
+
+                layer_input = inp.detach()
+                teacher_attn = teacher_states['attention_maps'][f'layer_{layer_idx}']
+
+                # 2. Forward (patched layer automatically captures states)
+                layer_output = student_ref.encoder.layers[layer_idx](layer_input)
+                layer_states = get_layer_states(layer_idx)
+
+                # 3. Compute Map & Loss
+                _, _, student_attn = compute_ssd_attention_map(
+                    layer_states, weighted=True, normalization='softmax',
+                    per_head=True, temp=cfg.temp
+                )
+
+                loss = combined_distillation_loss(student_attn, teacher_attn, cfg.double_cls_token)
+
+                layer_loss_tensors.append(loss.detach())
+
+                if compute_metrics:
+                    layer_attn_pairs.append((student_attn.detach(), teacher_attn))
+
+                # 4. Accumulate Loss into Chunk
+                chunk_loss = chunk_loss + loss
+
+                # 5. Check if we should Backward
+                is_last_layer = (layer_idx == num_layers - 1)
+                if (layer_idx + 1) % cfg.gradient_accum_layers == 0 or is_last_layer:
+                    chunk_loss.backward()
+                    batch_loss_tensor += chunk_loss.detach()
+                    chunk_loss = 0.0
+
+        optimizer.step()
+
+        total_batch_loss = batch_loss_tensor.item()
+        epoch_loss += total_batch_loss
+
+        if compute_metrics:
+            layer_losses_cpu = [l.item() for l in layer_loss_tensors]
+            for layer_idx, (s_attn, t_attn) in enumerate(layer_attn_pairs):
+                trackers['losses'][f'layer_{layer_idx}'].append(layer_losses_cpu[layer_idx])
+                trackers['cos_sims'][f'layer_{layer_idx}'].append(cosine_similarity_metric(s_attn, t_attn))
+                trackers['js_divs'][f'layer_{layer_idx}'].append(JS_divergence_metric(s_attn, t_attn))
+
+        if is_master:
+            progress_bar.set_postfix({'Avg Layer Loss': f'{total_batch_loss / num_layers:.4f}'})
+
+    return epoch_loss, trackers
+
+
+def validate(student, student_ref, teacher_extractor, val_dataloader,
+             get_layer_states, clear_states, cfg, device, is_master, dtype):
+    student.eval()
+
+    num_layers = cfg.num_layers
+    trackers = init_layer_trackers(num_layers)
+    val_loss_tensor = torch.zeros(1, device=device, dtype=torch.float32)
+    val_steps = 0
+
+    with torch.no_grad():
+        interactive = not os.environ.get('SLURM_JOB_ID')
+        for batch, _ in tqdm(val_dataloader, desc="Validating", disable=not (is_master and interactive)):
+            batch = batch.to(device, non_blocking=True)
+            clear_states()
+            batch_val_losses = []
+            batch_val_attn_pairs = []
+
+            with torch.amp.autocast('cuda', enabled=True, dtype=dtype):
+                _, t_states = teacher_extractor.get_vit_states(batch)
+                for i in range(num_layers):
+                    if i == 0:
+                        inp = t_states['first_layer_input']
+                    else:
+                        inp = t_states['layers_output'][f'layer_{i-1}']
+                    t_attn = t_states['attention_maps'][f'layer_{i}']
+
+                    _ = student_ref.encoder.layers[i](inp)
+                    s_states = get_layer_states(i)
+                    _, _, s_attn = compute_ssd_attention_map(
+                        s_states, weighted=True, normalization='softmax',
+                        per_head=True, temp=cfg.temp
+                    )
+
+                    layer_loss = combined_distillation_loss(s_attn, t_attn, cfg.double_cls_token)
+                    val_loss_tensor += layer_loss
+                    batch_val_losses.append(layer_loss)
+
+                    if is_master:
+                        batch_val_attn_pairs.append((s_attn.detach(), t_attn))
+
+            if is_master:
+                batch_val_losses_cpu = [l.item() for l in batch_val_losses]
+                for i, (loss_val, (s_attn, t_attn)) in enumerate(zip(batch_val_losses_cpu, batch_val_attn_pairs)):
+                    trackers['losses'][f'layer_{i}'].append(loss_val)
+                    trackers['cos_sims'][f'layer_{i}'].append(cosine_similarity_metric(s_attn, t_attn))
+                    trackers['js_divs'][f'layer_{i}'].append(JS_divergence_metric(s_attn, t_attn))
+
+            val_steps += 1
+
+    avg_val_loss = (val_loss_tensor / (val_steps * num_layers)).item()
+    if dist.is_initialized():
+        tens = torch.tensor(avg_val_loss, device=device)
+        dist.all_reduce(tens, op=dist.ReduceOp.AVG)
+        avg_val_loss = tens.item()
+
+    return avg_val_loss, trackers
+
+
+# --- MAIN ---
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--data_dir', type=str, default=None,
+                        help='Path to ImageNet dataset (use $SLURM_TMPDIR for local NVMe)')
+    parser.add_argument('--resume', action='store_true', default=False,
+                        help='Resume training from latest checkpoint')
+    args = parser.parse_args()
+
+    cfg = DistillationConfig()
+    if args.data_dir is not None:
+        cfg.data_dir = args.data_dir
+
+    local_rank, global_rank, world_size = setup_ddp()
+    device = torch.device(f"cuda:{local_rank}")
+    is_master = (global_rank == 0)
+    dtype = torch.bfloat16
+
+    learning_rate = cfg.base_lr * math.sqrt(world_size)
+    min_eta = cfg.base_eta_min * math.sqrt(world_size)
+    torch.set_float32_matmul_precision("high")
+    torch.backends.cudnn.benchmark = True
+
+    if is_master:
+        os.makedirs(cfg.root_dir, exist_ok=True)
+        print(f"World size: {world_size} | Batch per GPU: {cfg.base_batch_size} | Effective batch: {cfg.base_batch_size * world_size}")
+        print(f"LR: {learning_rate:.2e} (base {cfg.base_lr:.2e} × sqrt({world_size})) | Warmup: {cfg.warmup_epochs} epochs")
+        print(f"Distilling {cfg.num_layers} layers. Chunk Size: {cfg.gradient_accum_layers}")
+
+    # --- Models ---
+    teacher, teacher_extractor, teacher_state_dict = load_teacher(cfg, device)
+    student, separate_directions = load_student(cfg, teacher_state_dict, device, local_rank)
+    student_ref = student.module if dist.is_initialized() else student
+
+    trainable_params = [p for p in student.parameters() if p.requires_grad]
+    if is_master:
+        print(f"Trainable parameters: {sum(p.numel() for p in trainable_params)} / {sum(p.numel() for p in student.parameters())}")
+
+    optimizer = optim.AdamW(trainable_params, lr=learning_rate)
+
+    # Warmup + Cosine Annealing schedule
+    warmup_scheduler = optim.lr_scheduler.LinearLR(
+        optimizer, start_factor=0.01, end_factor=1.0, total_iters=cfg.warmup_epochs
+    )
+    cosine_scheduler = optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=cfg.num_epochs - cfg.warmup_epochs, eta_min=min_eta
+    )
+    scheduler = optim.lr_scheduler.SequentialLR(
+        optimizer, schedulers=[warmup_scheduler, cosine_scheduler], milestones=[cfg.warmup_epochs]
+    )
+
+    # --- Resume from checkpoint if requested ---
+    start_epoch = 0
+    all_epoch_metrics = []
+    if args.resume:
+        start_epoch, all_epoch_metrics = load_checkpoint(
+            cfg.root_dir, student_ref, optimizer, scheduler, device
+        )
+        if is_master:
+            if start_epoch > 0:
+                print(f"Resumed from checkpoint at epoch {start_epoch}")
+            else:
+                print("No checkpoint found, starting from scratch")
+
+    # --- Data (384x384, Google ViT [-1,1] normalization to match teacher preprocessing) ---
+    train_loader, val_loader, train_sampler = build_dataloaders(
+        cfg.data_dir, cfg.base_batch_size, num_workers=cfg.num_workers,
+        prefetch_factor=cfg.prefetch_factor, image_size=384, normalization='google_vit'
+    )
+
+    # --- Patch student for state extraction ---
+    unpatch_student, get_layer_states, clear_states = patch_student_for_extraction(
+        student_ref, cfg.num_layers, separate_directions=separate_directions
+    )
+
+    try:
+        for epoch in range(start_epoch, cfg.num_epochs):
+            if dist.is_initialized():
+                train_sampler.set_epoch(epoch)
+
+            # --- Train ---
+            train_start = time.time()
+            epoch_loss, train_trackers = train_one_epoch(
+                student, student_ref, teacher_extractor, optimizer, train_loader,
+                get_layer_states, clear_states, cfg, device, is_master, dtype
+            )
+            train_time = time.time() - train_start
+
+            scheduler.step()
+
+            # --- Validate ---
+            val_metrics = {}
+            val_time = 0.0
+            if (epoch + 1) % cfg.full_val_interval == 0 or (epoch == cfg.num_epochs - 1):
+                val_start = time.time()
+                avg_val_loss, val_trackers = validate(
+                    student, student_ref, teacher_extractor, val_loader,
+                    get_layer_states, clear_states, cfg, device, is_master, dtype
+                )
+                val_time = time.time() - val_start
+
+                if is_master:
+                    val_metrics = aggregate_layer_metrics(val_trackers, cfg.num_layers)
+
+            # --- Log & Save ---
+            if is_master:
+                train_metrics = aggregate_layer_metrics(train_trackers, cfg.num_layers)
+
+                if 'average' in train_metrics:
+                    avg = train_metrics['average']
+                    print(f"Epoch {epoch+1} | Train Loss: {avg['loss']:.4f} | Cos Sim: {avg['cosine_similarity']:.4f} | JS Div: {avg['js_divergence']:.4f} | Train Time: {train_time:.1f}s")
+
+                if 'average' in val_metrics:
+                    avg = val_metrics['average']
+                    print(f"Epoch {epoch+1} | Val Loss: {avg['loss']:.4f} | Cos Sim: {avg['cosine_similarity']:.4f} | JS Div: {avg['js_divergence']:.4f} | Val Time: {val_time:.1f}s")
+
+                epoch_metrics = {
+                    'epoch': epoch + 1,
+                    'train': train_metrics,
+                    'validation': val_metrics if val_metrics else None,
+                    'learning_rate': scheduler.get_last_lr()[0] if hasattr(scheduler, 'get_last_lr') else learning_rate
+                }
+                all_epoch_metrics.append(epoch_metrics)
+
+                metrics_file = save_metrics(all_epoch_metrics, cfg.root_dir)
+                print(f"Epoch {epoch+1} metrics saved to {metrics_file}")
+
+                # Save checkpoint every epoch for crash resilience
+                save_checkpoint(student_ref, optimizer, scheduler, epoch + 1, all_epoch_metrics, cfg.root_dir)
+                print(f"Epoch {epoch+1} checkpoint saved")
+
+    finally:
+        unpatch_student()
+
+    cleanup_ddp()
+
+
+if __name__ == "__main__":
+    main()
