@@ -29,6 +29,15 @@ except ImportError:
     pass
 
 
+def student_mixer_forward(student, layer_idx, layer_input):
+    """Forward through LN and mixer only — skip MLP since MO only needs attention maps."""
+    layer = student.encoder.layers[layer_idx]
+    ln_output = layer.ln_1(layer_input)
+    if student.hidden_dim != student.mamba_hidden_dim:
+        ln_output = layer.down_proj(ln_output)
+    layer.mixer(ln_output)
+
+
 def load_models(cfg, checkpoint_path, device):
     # Teacher
     teacher = vit_b_16(weights=None, image_size=384)
@@ -44,7 +53,7 @@ def load_models(cfg, checkpoint_path, device):
 
     extractor = ViTStatesExtractor(
         teacher, layer_indices=None, extract_attention=True,
-        double_cls_token=cfg.double_cls_token
+        double_cls_token=cfg.double_cls_token, extract_mixer_output=False
     )
 
     # Student
@@ -86,7 +95,7 @@ def evaluate(student, teacher_extractor, get_layer_states, clear_states, val_loa
                         inp = t_states['layers_output'][f'layer_{i-1}']
                     t_attn = t_states['attention_maps'][f'layer_{i}']
 
-                    _ = student.encoder.layers[i](inp)
+                    student_mixer_forward(student, i, inp)
                     s_states = get_layer_states(i)
                     _, _, s_attn = compute_ssd_attention_map(
                         s_states, weighted=True, normalization='softmax',

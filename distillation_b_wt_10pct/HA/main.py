@@ -338,7 +338,8 @@ def main():
     if is_master:
         print(f"Trainable parameters: {sum(p.numel() for p in trainable_params)} / {sum(p.numel() for p in student.parameters())}")
 
-    optimizer = optim.AdamW(trainable_params, lr=learning_rate)
+    weight_decay = getattr(cfg, 'weight_decay', 0.01)
+    optimizer = optim.AdamW(trainable_params, lr=learning_rate, weight_decay=weight_decay)
 
     # Warmup + Cosine Annealing
     warmup_scheduler = optim.lr_scheduler.LinearLR(

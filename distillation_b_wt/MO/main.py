@@ -61,7 +61,7 @@ def load_teacher(cfg, device):
 
     extractor = ViTStatesExtractor(
         teacher, layer_indices=None, extract_attention=True,
-        double_cls_token=cfg.double_cls_token
+        double_cls_token=cfg.double_cls_token, extract_mixer_output=False
     )
     return teacher, extractor, state_dict
 
@@ -102,6 +102,15 @@ def load_student(cfg, teacher_state_dict, device, local_rank):
         student = DDP(student, device_ids=[local_rank], find_unused_parameters=False)
 
     return student, separate_directions
+
+
+def student_mixer_forward(student_ref, layer_idx, layer_input):
+    """Forward through LN and mixer only — skip MLP since MO only needs attention maps."""
+    layer = student_ref.encoder.layers[layer_idx]
+    ln_output = layer.ln_1(layer_input)
+    if student_ref.hidden_dim != student_ref.mamba_hidden_dim:
+        ln_output = layer.down_proj(ln_output)
+    layer.mixer(ln_output)
 
 
 # --- TRAINING / VALIDATION ---
@@ -149,8 +158,8 @@ def train_one_epoch(student, student_ref, teacher_extractor, optimizer, dataload
                 layer_input = inp.detach()
                 teacher_attn = teacher_states['attention_maps'][f'layer_{layer_idx}']
 
-                # 2. Forward (patched layer automatically captures states)
-                layer_output = student_ref.encoder.layers[layer_idx](layer_input)
+                # 2. Forward (mixer only — triggers patched hooks to capture B, C, w)
+                student_mixer_forward(student_ref, layer_idx, layer_input)
                 layer_states = get_layer_states(layer_idx)
 
                 # 3. Compute Map & Loss
@@ -220,7 +229,7 @@ def validate(student, student_ref, teacher_extractor, val_dataloader,
                         inp = t_states['layers_output'][f'layer_{i-1}']
                     t_attn = t_states['attention_maps'][f'layer_{i}']
 
-                    _ = student_ref.encoder.layers[i](inp)
+                    student_mixer_forward(student_ref, i, inp)
                     s_states = get_layer_states(i)
                     _, _, s_attn = compute_ssd_attention_map(
                         s_states, weighted=True, normalization='softmax',

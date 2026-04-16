@@ -106,9 +106,10 @@ def convert_npz_to_torchvision(npz_path, num_layers, embed_dim, num_heads):
 
 
 class ViTStatesExtractor:
-    def __init__(self, model, layer_indices=None, average_attn_weights=False, extract_attention=False, double_cls_token=False):
+    def __init__(self, model, layer_indices=None, average_attn_weights=False, extract_attention=False, double_cls_token=False, extract_mixer_output=True):
         self.model = model
         self.extract_attention = extract_attention
+        self.extract_mixer_output = extract_mixer_output
         self.first_layer_input = None
         self.attention_maps = {}
         self.layers_mixer_output = {}
@@ -209,7 +210,7 @@ class ViTStatesExtractor:
             if attn_weights is not None:
                 self.attention_maps[f'layer_{i}'] = attn_weights.detach()
 
-            if attn_out is not None:
+            if self.extract_mixer_output and attn_out is not None:
                 self.layers_mixer_output[f'layer_{i}'] = attn_out.clone().detach()
                 if self.double_cls_token:
                     self.layers_mixer_output[f'layer_{i}'] = self._duplicate_cls_token(
