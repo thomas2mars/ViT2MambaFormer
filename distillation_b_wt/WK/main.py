@@ -12,8 +12,8 @@ import os
 import argparse
 
 # --- IMPORTS ---
-sys.path.append(os.path.join(os.path.dirname(__file__), '..'))   # distillation_b_wt/ for WK.*
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))  # project root for utils.*
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 from utils.vit_utils import convert_npz_to_torchvision
 from utils.training import (
     setup_ddp, cleanup_ddp, save_checkpoint, load_checkpoint,
