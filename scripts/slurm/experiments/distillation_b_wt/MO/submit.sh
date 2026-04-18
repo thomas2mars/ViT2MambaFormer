@@ -21,11 +21,11 @@ export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 
 # Extract ImageNet train + val to local NVMe ($SLURM_TMPDIR)
 echo "Extracting ImageNet train to local NVMe scratch..."
-tar xf /project/def-mpederso/dataset/imagenet/imagenet.tar -C $SLURM_TMPDIR --checkpoint=50000
+tar xf ~/datasets/imagenet.tar -C $SLURM_TMPDIR --checkpoint=50000
 echo "Train extraction done."
 
 echo "Extracting ImageNet val to local NVMe scratch..."
-tar xf /project/def-mpederso/dataset/imagenet_val.tar -C $SLURM_TMPDIR
+tar xf ~/datasets/imagenet_val.tar -C $SLURM_TMPDIR
 echo "Val extraction done."
 
 # === Launch with torchrun (4 GPUs) ===

@@ -15,7 +15,7 @@ source ~/envs/MambaFormer/bin/activate
 
 # Extract ImageNet val to local NVMe
 echo "Extracting ImageNet val..."
-tar xf /project/def-mpederso/dataset/imagenet_val.tar -C $SLURM_TMPDIR
+tar xf ~/datasets/imagenet_val.tar -C $SLURM_TMPDIR
 echo "Val extraction done."
 
 cd ~/project/ViT2MambaFormer

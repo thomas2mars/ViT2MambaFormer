@@ -7,8 +7,8 @@ class DistillationConfig:
     base_batch_size: int = 32
     base_lr: float = 1e-5
     base_eta_min: float = 1e-7
-    num_epochs: int = 25
-    warmup_epochs: int = 3
+    num_epochs: int = 20
+    warmup_epochs: int = 2
 
     # How many layers to accumulate before calling .backward()
     gradient_accum_layers: int = 12
@@ -28,7 +28,7 @@ class DistillationConfig:
     # Augmentation
     use_randaugment: bool = True
     randaugment_num_ops: int = 2
-    randaugment_magnitude: int = 9
+    randaugment_magnitude: int = 5
 
     # Paths
     root_dir: str = "distillation_b_wt_10pct/MO/logs/distill_MO_base_10pct_v1"

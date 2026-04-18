@@ -22,7 +22,7 @@ source ~/envs/MambaFormer/bin/activate
 
 # === Extract ImageNet val only (much faster than full train) ===
 echo "Extracting ImageNet val to local NVMe scratch..."
-tar xf /project/def-mpederso/dataset/imagenet_val.tar -C $SLURM_TMPDIR
+tar xf ~/datasets/imagenet_val.tar -C $SLURM_TMPDIR
 echo "Val extraction done."
 
 # === Run ===
