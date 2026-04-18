@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=distill_MO_base_10pct
-#SBATCH --account=rrg-mpederso
+#SBATCH --account=rrg-josedolz
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=h100:2
 #SBATCH --cpus-per-task=12
