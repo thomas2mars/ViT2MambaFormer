@@ -333,10 +333,7 @@ def main():
         cfg.data_dir, cfg.base_batch_size,
         subset_fraction=cfg.subset_fraction, subset_seed=cfg.subset_seed,
         num_workers=cfg.num_workers, prefetch_factor=cfg.prefetch_factor,
-        image_size=384, normalization='google_vit',
-        use_randaugment=getattr(cfg, 'use_randaugment', False),
-        randaugment_num_ops=getattr(cfg, 'randaugment_num_ops', 2),
-        randaugment_magnitude=getattr(cfg, 'randaugment_magnitude', 9),
+        image_size=384, normalization='google_vit'
     )
 
     if is_master:

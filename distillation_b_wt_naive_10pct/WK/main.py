@@ -1,4 +1,3 @@
-import copy
 import numpy as np
 import torch
 import torch.optim as optim
@@ -183,42 +182,9 @@ def apply_mixup_cutmix(images, labels, mixup_alpha=0.8, cutmix_alpha=1.0):
     return mixed, labels_b, lam
 
 
-# --- EMA ---
-
-class ModelEMA:
-    """Exponential moving average of model weights.
-
-    Maintains a non-trainable shadow copy whose params are updated each step:
-        ema_param = decay * ema_param + (1 - decay) * model_param
-    Buffers (BN/LN running stats, etc.) are copied directly from the live model.
-    Use the shadow for validation: it averages out late-training noise and tends
-    to land in a flatter minimum, especially helpful on small datasets.
-    """
-    def __init__(self, model, decay=0.9998, device=None):
-        self.decay = decay
-        self.module = copy.deepcopy(model).to(device)
-        self.module.eval()
-        for p in self.module.parameters():
-            p.requires_grad = False
-
-    @torch.no_grad()
-    def update(self, model):
-        d = self.decay
-        for ema_p, p in zip(self.module.parameters(), model.parameters()):
-            ema_p.mul_(d).add_(p.detach(), alpha=1.0 - d)
-        for ema_b, b in zip(self.module.buffers(), model.buffers()):
-            ema_b.copy_(b)
-
-    def state_dict(self):
-        return self.module.state_dict()
-
-    def load_state_dict(self, sd):
-        self.module.load_state_dict(sd)
-
-
 # --- TRAINING / VALIDATION ---
 
-def train_one_epoch(student, teacher, optimizer, dataloader, cfg, device, is_master, dtype, ema=None):
+def train_one_epoch(student, teacher, optimizer, dataloader, cfg, device, is_master, dtype):
     student.train()
     running_loss = 0.0
     train_correct = 0
@@ -258,9 +224,6 @@ def train_one_epoch(student, teacher, optimizer, dataloader, cfg, device, is_mas
 
         loss.backward()
         optimizer.step()
-
-        if ema is not None:
-            ema.update(student.module if dist.is_initialized() else student)
 
         running_loss += loss.item()
         correct, total = compute_agreement(student_logits, teacher_logits)
@@ -387,10 +350,6 @@ def main():
 
     optimizer = optim.AdamW(trainable_params, lr=learning_rate)
 
-    ema = ModelEMA(student_ref, decay=cfg.ema_decay, device=device) if getattr(cfg, 'use_ema', False) else None
-    if is_master and ema is not None:
-        print(f"EMA enabled (decay={cfg.ema_decay})")
-
     # Warmup + Cosine Annealing
     warmup_scheduler = optim.lr_scheduler.LinearLR(
         optimizer, start_factor=0.01, end_factor=1.0, total_iters=cfg.warmup_epochs
@@ -429,7 +388,7 @@ def main():
             # --- Train ---
             train_start = time.time()
             avg_train_loss, train_accuracy = train_one_epoch(
-                student, teacher, optimizer, train_loader, cfg, device, is_master, dtype, ema=ema
+                student, teacher, optimizer, train_loader, cfg, device, is_master, dtype
             )
             train_time = time.time() - train_start
 
@@ -441,24 +400,16 @@ def main():
             # --- Validate ---
             val_loss = None
             val_accuracy = None
-            val_loss_ema = None
-            val_accuracy_ema = None
             val_time = 0.0
             if (epoch + 1) % cfg.full_val_interval == 0 or (epoch == cfg.num_epochs - 1):
                 val_start = time.time()
                 val_loss, val_accuracy = validate(
                     student, teacher, val_loader, cfg, device, is_master, dtype
                 )
-                if ema is not None:
-                    val_loss_ema, val_accuracy_ema = validate(
-                        ema.module, teacher, val_loader, cfg, device, is_master, dtype
-                    )
                 val_time = time.time() - val_start
 
                 if is_master:
                     print(f"Epoch {epoch+1} | Val Loss: {val_loss:.4f} | Val Agreement: {val_accuracy:.2f}% | Val Time: {val_time:.1f}s")
-                    if ema is not None:
-                        print(f"Epoch {epoch+1} | EMA Val Loss: {val_loss_ema:.4f} | EMA Val Agreement: {val_accuracy_ema:.2f}%")
 
             # --- Log & Save ---
             if is_master:
@@ -468,8 +419,6 @@ def main():
                     'train_accuracy': train_accuracy,
                     'val_loss': val_loss,
                     'val_accuracy': val_accuracy,
-                    'val_loss_ema': val_loss_ema,
-                    'val_accuracy_ema': val_accuracy_ema,
                     'learning_rate': scheduler.get_last_lr()[0]
                 }
                 all_epoch_metrics.append(epoch_metrics)
@@ -483,8 +432,6 @@ def main():
                 # Save standalone model weights at intervals
                 if (epoch + 1) % cfg.save_model_every == 0 or (epoch == cfg.num_epochs - 1):
                     torch.save(student_ref.state_dict(), os.path.join(cfg.root_dir, f"model_ep{epoch+1}.pth"))
-                    if ema is not None:
-                        torch.save(ema.state_dict(), os.path.join(cfg.root_dir, f"model_ep{epoch+1}_ema.pth"))
                     print(f"Epoch {epoch+1} model saved")
 
     finally:

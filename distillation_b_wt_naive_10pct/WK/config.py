@@ -1,8 +1,4 @@
-"""WK Base 10% — Improved recipe over naive_10pct.
-
-Changes vs naive: full augmentation (RandAugment + RandomErasing + MixUp/CutMix),
-longer schedule, weight EMA for evaluation. CE term and temperature unchanged.
-
+"""WK Base 10% — Same recipe as Base WK v1, trained on 10% ImageNet subset.
 Teacher: ViT-B/16 (Google .npz, 84.16% top-1) | Student: MambaFormer_Base_expand1_light_BiMamba2
 """
 from dataclasses import dataclass
@@ -14,17 +10,17 @@ class DistillationConfig:
     base_batch_size: int = 32
     base_lr: float = 5e-6
     base_eta_min: float = 1e-7
-    num_epochs: int = 60
-    warmup_epochs: int = 3
+    num_epochs: int = 30
+    warmup_epochs: int = 2
     distillation_temp: float = 5.0
 
-    # Loss (pure soft KL — no CE term, no label smoothing)
+    # Loss
     kl_weight: float = 1.0
     ce_weight: float = 0.0
     label_smoothing: float = 0.0
 
     # Logging
-    save_model_every: int = 5
+    save_model_every: int = 1
 
     # Distillation
     double_cls_token: bool = True
@@ -43,24 +39,20 @@ class DistillationConfig:
     num_workers: int = 8
     val_num_workers: int = 4
 
-    # Loss mode
+    # Loss mode: 'soft' (KL) or 'hard' (DeiT hard-label distillation)
     loss_type: str = 'soft'
-    distill_alpha: float = 0.5
+    distill_alpha: float = 0.5  # weight on teacher CE in hard distillation
 
-    # Augmentation (all on for 10% — combats overfitting on tiny subset)
-    use_randaugment: bool = True
+    # Augmentation (disabled by default)
+    use_randaugment: bool = False
     randaugment_num_ops: int = 2
     randaugment_magnitude: int = 9
-    use_random_erasing: bool = True
+    use_random_erasing: bool = False
     random_erasing_p: float = 0.25
-    use_mixup_cutmix: bool = True
+    use_mixup_cutmix: bool = False
     mixup_alpha: float = 0.8
     cutmix_alpha: float = 1.0
 
-    # EMA — evaluate a slow exponential moving average of student weights
-    use_ema: bool = False
-    ema_decay: float = 0.9998
-
     @property
     def full_val_interval(self):
-        return max(1, self.num_epochs // 12)
+        return max(1, self.num_epochs // 11)

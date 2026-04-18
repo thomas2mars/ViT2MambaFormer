@@ -18,7 +18,7 @@
 #     --seed 42
 
 # === Environment ===
-source /home/t2mars/envs/MambaFormer/bin/activate
+source ~/envs/MambaFormer/bin/activate
 
 # === Extract ImageNet val only (much faster than full train) ===
 echo "Extracting ImageNet val to local NVMe scratch..."
@@ -26,7 +26,7 @@ tar xf /project/def-mpederso/dataset/imagenet_val.tar -C $SLURM_TMPDIR
 echo "Val extraction done."
 
 # === Run ===
-cd /project/6007600/t2mars/dist_vision_mamba
+cd ~/project/ViT2MambaFormer
 mkdir -p logs
 
 python tools/visualize_attention.py \

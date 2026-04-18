@@ -11,14 +11,14 @@
 #SBATCH --error=distillation_b_wt/WK/logs/%x_%j.err
 
 # === Environment ===
-source /home/t2mars/envs/MambaFormer/bin/activate
+source ~/envs/MambaFormer/bin/activate
 
 # Extract ImageNet val to local NVMe
 echo "Extracting ImageNet val..."
 tar xf /project/def-mpederso/dataset/imagenet_val.tar -C $SLURM_TMPDIR
 echo "Val extraction done."
 
-cd /home/t2mars/project/ViT2MambaFormer
+cd ~/project/ViT2MambaFormer
 mkdir -p distillation_b_wt/WK/logs
 
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK

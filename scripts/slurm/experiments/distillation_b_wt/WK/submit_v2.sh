@@ -11,7 +11,7 @@
 #SBATCH --error=distillation_b_wt/WK/logs/%x_%j.err
 
 # === Environment ===
-source /home/t2mars/envs/MambaFormer/bin/activate
+source ~/envs/MambaFormer/bin/activate
 
 # === Performance Tuning for H100 + NCCL ===
 export NCCL_DEBUG=WARN
@@ -29,7 +29,7 @@ tar xf /project/def-mpederso/dataset/imagenet_val.tar -C $SLURM_TMPDIR
 echo "Val extraction done."
 
 # === Launch with torchrun (4 GPUs) ===
-cd /lustre09/project/6090488/t2mars/ViT2MambaFormer
+cd ~/project/ViT2MambaFormer
 
 mkdir -p distillation_b_wt/WK/logs
 

@@ -5,13 +5,13 @@
 #SBATCH --gpus-per-node=h100:2
 #SBATCH --cpus-per-task=12
 #SBATCH --ntasks-per-node=2
-#SBATCH --mem=256G
-#SBATCH --time=00:45:00
+#SBATCH --mem=128G
+#SBATCH --time=05:00:00
 #SBATCH --output=distillation_b_wt_10pct/MO/logs/%x_%j.out
 #SBATCH --error=distillation_b_wt_10pct/MO/logs/%x_%j.err
 
 # === Environment ===
-source /home/t2mars/envs/MambaFormer/bin/activate
+source ~/envs/MambaFormer/bin/activate
 
 # === Performance Tuning for H100 + NCCL ===
 export NCCL_DEBUG=WARN
@@ -29,7 +29,7 @@ tar xf /project/def-mpederso/dataset/imagenet_val.tar -C $SLURM_TMPDIR
 echo "Val extraction done."
 
 # === Launch with torchrun (2 GPUs) ===
-cd /project/6007600/t2mars/dist_vision_mamba
+cd ~/project/ViT2MambaFormer
 
 mkdir -p distillation_b_wt_10pct/MO/logs
 

@@ -1,14 +1,14 @@
 #!/bin/bash
-#SBATCH --job-name=distill_WK_base_10pct
+#SBATCH --job-name=distill_MO_base_naive_10pct
 #SBATCH --account=rrg-mpederso
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=h100:2
 #SBATCH --cpus-per-task=12
 #SBATCH --ntasks-per-node=2
-#SBATCH --mem=128G
-#SBATCH --time=04:00:00
-#SBATCH --output=distillation_b_wt_10pct/WK/logs/%x_%j.out
-#SBATCH --error=distillation_b_wt_10pct/WK/logs/%x_%j.err
+#SBATCH --mem=256G
+#SBATCH --time=00:45:00
+#SBATCH --output=distillation_b_wt_naive_10pct/MO/logs/%x_%j.out
+#SBATCH --error=distillation_b_wt_naive_10pct/MO/logs/%x_%j.err
 
 # === Environment ===
 source ~/envs/MambaFormer/bin/activate
@@ -21,7 +21,7 @@ export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 
 # Extract ImageNet train + val to local NVMe ($SLURM_TMPDIR)
 echo "Extracting ImageNet train to local NVMe scratch..."
-tar xf /project/def-mpederso/dataset/imagenet/imagenet.tar -C $SLURM_TMPDIR --checkpoint=500000
+tar xf /project/def-mpederso/dataset/imagenet/imagenet.tar -C $SLURM_TMPDIR --checkpoint=50000
 echo "Train extraction done."
 
 echo "Extracting ImageNet val to local NVMe scratch..."
@@ -31,7 +31,7 @@ echo "Val extraction done."
 # === Launch with torchrun (2 GPUs) ===
 cd ~/project/ViT2MambaFormer
 
-mkdir -p distillation_b_wt_10pct/WK/logs
+mkdir -p distillation_b_wt_naive_10pct/MO/logs
 
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
@@ -43,6 +43,6 @@ if [ "${RESUME:-0}" = "1" ]; then
 fi
 
 torchrun --nproc_per_node=2 \
-    distillation_b_wt_10pct/WK/main.py \
+    distillation_b_wt_naive_10pct/MO/main.py \
     --data_dir $SLURM_TMPDIR/ImageNet \
     $RESUME_FLAG

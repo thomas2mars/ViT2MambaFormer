@@ -1,17 +1,17 @@
 #!/bin/bash
-#SBATCH --job-name=distill_WK_base_10pct_50ep
+#SBATCH --job-name=distill_WK_base_naive_10pct
 #SBATCH --account=rrg-mpederso
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=h100:2
 #SBATCH --cpus-per-task=12
 #SBATCH --ntasks-per-node=2
 #SBATCH --mem=128G
-#SBATCH --time=06:00:00
-#SBATCH --output=distillation_b_wt_10pct/WK/logs/%x_%j.out
-#SBATCH --error=distillation_b_wt_10pct/WK/logs/%x_%j.err
+#SBATCH --time=02:30:00
+#SBATCH --output=distillation_b_wt_naive_10pct/WK/logs/%x_%j.out
+#SBATCH --error=distillation_b_wt_naive_10pct/WK/logs/%x_%j.err
 
 # === Environment ===
-source /home/t2mars/envs/MambaFormer/bin/activate
+source ~/envs/MambaFormer/bin/activate
 
 # === Performance Tuning for H100 + NCCL ===
 export NCCL_DEBUG=WARN
@@ -29,13 +29,13 @@ tar xf /project/def-mpederso/dataset/imagenet_val.tar -C $SLURM_TMPDIR
 echo "Val extraction done."
 
 # === Launch with torchrun (2 GPUs) ===
-cd /project/6007600/t2mars/dist_vision_mamba
+cd ~/project/ViT2MambaFormer
 
-mkdir -p distillation_b_wt_10pct/WK/logs
+mkdir -p distillation_b_wt_naive_10pct/WK/logs
 
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
-# Set RESUME=1 before sbatch to resume: RESUME=1 sbatch submit_50ep.sh
+# Set RESUME=1 before sbatch to resume: RESUME=1 sbatch submit.sh
 RESUME_FLAG=""
 if [ "${RESUME:-0}" = "1" ]; then
     RESUME_FLAG="--resume"
@@ -43,7 +43,6 @@ if [ "${RESUME:-0}" = "1" ]; then
 fi
 
 torchrun --nproc_per_node=2 \
-    distillation_b_wt_10pct/WK/main.py \
-    --config config_50ep \
+    distillation_b_wt_naive_10pct/WK/main.py \
     --data_dir $SLURM_TMPDIR/ImageNet \
     $RESUME_FLAG

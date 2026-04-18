@@ -7,8 +7,9 @@ class DistillationConfig:
     base_batch_size: int = 32
     base_lr: float = 1e-5
     base_eta_min: float = 1e-7
-    num_epochs: int = 25
-    warmup_epochs: int = 3
+    weight_decay: float = 0.02
+    num_epochs: int = 20
+    warmup_epochs: int = 2
 
     # How many layers to accumulate before calling .backward()
     gradient_accum_layers: int = 12
@@ -25,13 +26,8 @@ class DistillationConfig:
     subset_fraction: float = 0.1
     subset_seed: int = 42
 
-    # Augmentation
-    use_randaugment: bool = True
-    randaugment_num_ops: int = 2
-    randaugment_magnitude: int = 9
-
     # Paths
-    root_dir: str = "distillation_b_wt_10pct/MO/logs/distill_MO_base_10pct_v1"
+    root_dir: str = "distillation_b_wt_10pct/MO/logs/distill_MO_base_10pct_v2"
     teacher_weights_path: str = "models/vit/ViT-B_16.npz"
     data_dir: str = "dataset/ImageNet_ILSVRC2012"
 

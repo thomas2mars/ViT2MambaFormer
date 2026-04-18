@@ -13,15 +13,23 @@ GOOGLE_VIT_MEAN = [0.5, 0.5, 0.5]
 GOOGLE_VIT_STD = [0.5, 0.5, 0.5]
 
 
-def get_train_transform(image_size=224, normalization='imagenet'):
+def get_train_transform(image_size=224, normalization='imagenet',
+                        use_randaugment=False, randaugment_num_ops=2,
+                        randaugment_magnitude=9):
     mean, std = _get_norm_stats(normalization)
-    return transforms.Compose([
+    ops = [
         transforms.RandomResizedCrop(image_size),
         transforms.RandomHorizontalFlip(),
         transforms.RandomRotation(10),
+    ]
+    if use_randaugment:
+        ops.append(transforms.RandAugment(num_ops=randaugment_num_ops,
+                                          magnitude=randaugment_magnitude))
+    ops += [
         transforms.ToTensor(),
-        transforms.Normalize(mean, std)
-    ])
+        transforms.Normalize(mean, std),
+    ]
+    return transforms.Compose(ops)
 
 
 def get_val_transform(image_size=384, normalization='imagenet'):
@@ -62,13 +70,19 @@ def get_class_stratified_subset(dataset, fraction=0.1, seed=42):
 
 def build_subset_dataloaders(data_dir, batch_size, subset_fraction=0.1, subset_seed=42,
                              num_workers=12, prefetch_factor=3,
-                             image_size=224, normalization='imagenet'):
+                             image_size=224, normalization='imagenet',
+                             use_randaugment=False, randaugment_num_ops=2,
+                             randaugment_magnitude=9):
     """Build train/val dataloaders with a class-stratified subset of the training set.
 
     Only the training set is subsetted; validation uses all samples.
     """
     train_dataset = datasets.ImageFolder(
-        os.path.join(data_dir, "train"), transform=get_train_transform(image_size, normalization)
+        os.path.join(data_dir, "train"),
+        transform=get_train_transform(image_size, normalization,
+                                      use_randaugment=use_randaugment,
+                                      randaugment_num_ops=randaugment_num_ops,
+                                      randaugment_magnitude=randaugment_magnitude)
     )
     train_dataset = get_class_stratified_subset(train_dataset, fraction=subset_fraction, seed=subset_seed)
 
